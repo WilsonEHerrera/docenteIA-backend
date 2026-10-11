@@ -1,0 +1,209 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum Role {
+  ADMIN
+  TEACHER
+  COORDINATOR
+  STUDENT
+  GUARDIAN
+}
+
+enum Weekday {
+  MONDAY
+  TUESDAY
+  WEDNESDAY
+  THURSDAY
+  FRIDAY
+  SATURDAY
+}
+
+model Institution {
+  id        String    @id @default(uuid()) @db.Uuid
+  name      String
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  users       User[]
+  subjects    Subject[]
+  courses     Course[]
+  students    Student[]
+  enrollments Enrollment[]
+  schedules   Schedule[]
+
+  @@map("institutions")
+}
+
+model User {
+  id                  String    @id @default(uuid()) @db.Uuid
+  institutionId       String    @db.Uuid
+  email               String    @unique
+  fullName            String
+  role                Role
+  // argon2id hash; null means the user cannot log in yet.
+  passwordHash        String?
+  isActive            Boolean   @default(true)
+  failedLoginAttempts Int       @default(0)
+  lockedUntil         DateTime?
+  lastLoginAt         DateTime?
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+  deletedAt           DateTime?
+
+  institution   Institution          @relation(fields: [institutionId], references: [id])
+  courses       Course[]
+  refreshTokens RefreshToken[]
+  resetTokens   PasswordResetToken[]
+
+  @@index([institutionId, role])
+  @@map("users")
+}
+
+model RefreshToken {
+  id        String    @id @default(uuid()) @db.Uuid
+  userId    String    @db.Uuid
+  // All tokens produced by rotating one login share a family.
+  familyId  String    @db.Uuid
+  tokenHash String    @unique
+  expiresAt DateTime
+  revokedAt DateTime?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([familyId])
+  @@map("refresh_tokens")
+}
+
+model PasswordResetToken {
+  id        String    @id @default(uuid()) @db.Uuid
+  userId    String    @db.Uuid
+  tokenHash String    @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("password_reset_tokens")
+}
+
+model AuditLog {
+  id            String   @id @default(uuid()) @db.Uuid
+  institutionId String?  @db.Uuid
+  userId        String?  @db.Uuid
+  action        String
+  resource      String
+  resourceId    String?
+  ip            String?
+  diff          Json?
+  at            DateTime @default(now())
+
+  @@index([institutionId, at])
+  @@index([userId])
+  @@index([action])
+  @@map("audit_logs")
+}
+
+model Subject {
+  id            String    @id @default(uuid()) @db.Uuid
+  institutionId String    @db.Uuid
+  name          String
+  code          String
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  deletedAt     DateTime?
+
+  institution Institution @relation(fields: [institutionId], references: [id])
+  courses     Course[]
+
+  @@unique([institutionId, code])
+  @@map("subjects")
+}
+
+model Course {
+  id            String    @id @default(uuid()) @db.Uuid
+  institutionId String    @db.Uuid
+  subjectId     String    @db.Uuid
+  teacherId     String    @db.Uuid
+  name          String
+  period        String
+  maxAbsences   Int       @default(10)
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  deletedAt     DateTime?
+
+  institution Institution  @relation(fields: [institutionId], references: [id])
+  subject     Subject      @relation(fields: [subjectId], references: [id])
+  teacher     User         @relation(fields: [teacherId], references: [id])
+  enrollments Enrollment[]
+  schedules   Schedule[]
+
+  @@index([institutionId, teacherId])
+  @@index([subjectId])
+  @@map("courses")
+}
+
+model Student {
+  id            String    @id @default(uuid()) @db.Uuid
+  institutionId String    @db.Uuid
+  code          String
+  fullName      String
+  email         String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  deletedAt     DateTime?
+
+  institution Institution  @relation(fields: [institutionId], references: [id])
+  enrollments Enrollment[]
+
+  @@unique([institutionId, code])
+  @@map("students")
+}
+
+model Enrollment {
+  id            String    @id @default(uuid()) @db.Uuid
+  institutionId String    @db.Uuid
+  courseId      String    @db.Uuid
+  studentId     String    @db.Uuid
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  deletedAt     DateTime?
+
+  institution Institution @relation(fields: [institutionId], references: [id])
+  course      Course      @relation(fields: [courseId], references: [id])
+  student     Student     @relation(fields: [studentId], references: [id])
+
+  @@unique([courseId, studentId])
+  @@index([institutionId])
+  @@index([studentId])
+  @@map("enrollments")
+}
+
+model Schedule {
+  id            String    @id @default(uuid()) @db.Uuid
+  institutionId String    @db.Uuid
+  courseId      String    @db.Uuid
+  weekday       Weekday
+  startTime     String // "HH:mm"
+  endTime       String // "HH:mm"
+  room          String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  deletedAt     DateTime?
+
+  institution Institution @relation(fields: [institutionId], references: [id])
+  course      Course      @relation(fields: [courseId], references: [id])
+
+  @@index([courseId, weekday])
+  @@index([institutionId])
+  @@map("schedules")
+}
