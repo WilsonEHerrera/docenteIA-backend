@@ -2,6 +2,7 @@ import 'dotenv/config';
 import { PrismaPg } from '@prisma/adapter-pg';
 import * as argon2 from 'argon2';
 import { PrismaClient, Role, Weekday } from '@prisma/client';
+import { seedModuleData } from './seed-modules';
 
 if (process.env.NODE_ENV === 'production') {
   throw new Error('El seed de demo no se ejecuta en producción.');
@@ -32,6 +33,7 @@ async function main(): Promise<void> {
     { n: 2, email: 'coordinador@demo.docentia.test', fullName: 'Coordinadora Demo', role: Role.COORDINATOR },
     { n: 3, email: 'docente1@demo.docentia.test', fullName: 'Docente Uno', role: Role.TEACHER },
     { n: 4, email: 'docente2@demo.docentia.test', fullName: 'Docente Dos', role: Role.TEACHER },
+    { n: 5, email: 'acudiente1@demo.docentia.test', fullName: 'Acudiente Uno', role: Role.GUARDIAN },
   ];
   // Demo-only credential (the seed refuses to run in production).
   const passwordHash = await argon2.hash(DEMO_PASSWORD, {
@@ -125,6 +127,58 @@ async function main(): Promise<void> {
       },
     });
   }
+
+  // Matemáticas 10-A: three activities summing 100 %, with partial grades.
+  const activities = [
+    { n: 1, name: 'Taller 1', weightPct: '30.00' },
+    { n: 2, name: 'Quiz 1', weightPct: '30.00' },
+    { n: 3, name: 'Examen parcial', weightPct: '40.00' },
+  ];
+  for (const a of activities) {
+    await prisma.activity.upsert({
+      where: { id: id(7, a.n) },
+      update: {},
+      create: {
+        id: id(7, a.n),
+        institutionId: INSTITUTION_ID,
+        courseId: id(3, 1),
+        name: a.name,
+        weightPct: a.weightPct,
+        period: '2026-1',
+      },
+    });
+  }
+
+  const demoGrades: Record<number, string[]> = {
+    // student n → grades for [Taller 1, Quiz 1, Examen parcial]; E003 is 4.0/3.5/4.5 → 4.05
+    3: ['4.0', '3.5', '4.5'],
+    6: ['2.5', '2.0'],
+    9: ['3.8'],
+  };
+  const mathStudents = [3, 6, 9, 12]; // students with n % 3 === 0 are enrolled in course 1
+  for (const studentN of mathStudents) {
+    for (const a of activities) {
+      const value = demoGrades[studentN]?.[a.n - 1] ?? null;
+      await prisma.grade.upsert({
+        where: {
+          activityId_studentId: {
+            activityId: id(7, a.n),
+            studentId: id(4, studentN),
+          },
+        },
+        update: { value },
+        create: {
+          id: id(8, studentN * 10 + a.n),
+          institutionId: INSTITUTION_ID,
+          activityId: id(7, a.n),
+          studentId: id(4, studentN),
+          value,
+        },
+      });
+    }
+  }
+
+  await seedModuleData(prisma, { institutionId: INSTITUTION_ID, id });
 
   console.log('Seed completado.');
 }

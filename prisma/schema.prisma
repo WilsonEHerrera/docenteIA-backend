@@ -14,6 +14,72 @@ enum Role {
   GUARDIAN
 }
 
+enum AttendanceStatus {
+  PRESENT
+  ABSENT
+  UNRECOGNIZED
+  EXCUSED
+}
+
+enum AttendanceSource {
+  AI
+  MANUAL
+}
+
+enum SessionStatus {
+  PROCESSING
+  READY
+  MANUAL_REQUIRED
+  CONFIRMED
+}
+
+enum QuestionOrigin {
+  AI
+  TEACHER
+}
+
+enum AttendanceMode {
+  MANUAL
+  PHOTO
+}
+
+enum QuizStatus {
+  GENERATING
+  DRAFT
+  MANUAL_REQUIRED
+  PUBLISHED
+}
+
+enum QuestionType {
+  MULTIPLE_CHOICE
+  TRUE_FALSE
+  OPEN
+}
+
+enum ConsentPurpose {
+  FACIAL_ATTENDANCE
+}
+
+enum AiCallKind {
+  FACE_ENROLLMENT
+  FACE_RECOGNITION
+  TEXT_EVALUATION
+  QUIZ_GENERATION
+}
+
+enum SubmissionStatus {
+  PROCESSING
+  SUGGESTED
+  MANUAL_REQUIRED
+}
+
+enum SuggestionStatus {
+  PENDING_APPROVAL
+  APPROVED
+  EDITED
+  REJECTED
+}
+
 enum Weekday {
   MONDAY
   TUESDAY
@@ -36,6 +102,18 @@ model Institution {
   students    Student[]
   enrollments Enrollment[]
   schedules   Schedule[]
+  activities  Activity[]
+  grades      Grade[]
+
+  attendanceSessions AttendanceSession[]
+  attendanceRecords  AttendanceRecord[]
+  rubrics            Rubric[]
+  submissions        Submission[]
+  aiSuggestions      AiSuggestion[]
+  studentGuardians   StudentGuardian[]
+  biometricConsents  BiometricConsent[]
+  faceReferences     FaceReference[]
+  quizzes            Quiz[]
 
   @@map("institutions")
 }
@@ -56,10 +134,12 @@ model User {
   updatedAt           DateTime  @updatedAt
   deletedAt           DateTime?
 
-  institution   Institution          @relation(fields: [institutionId], references: [id])
-  courses       Course[]
-  refreshTokens RefreshToken[]
-  resetTokens   PasswordResetToken[]
+  institution        Institution          @relation(fields: [institutionId], references: [id])
+  courses            Course[]
+  attendanceSessions AttendanceSession[]
+  guardianOf         StudentGuardian[]
+  refreshTokens      RefreshToken[]
+  resetTokens        PasswordResetToken[]
 
   @@index([institutionId, role])
   @@map("users")
@@ -113,6 +193,28 @@ model AuditLog {
   @@map("audit_logs")
 }
 
+/// One row per AI operation (after retries). Never stores prompts, images or student text.
+model AiCallLog {
+  id            String     @id @default(uuid()) @db.Uuid
+  institutionId String     @db.Uuid
+  userId        String?    @db.Uuid
+  kind          AiCallKind
+  provider      String
+  promptVersion String?
+  success       Boolean
+  // Attempts actually made (1..AI_MAX_RETRIES).
+  attempts      Int
+  latencyMs     Int
+  costUsd       Decimal?   @db.Decimal(10, 6)
+  // TIMEOUT | PROVIDER_ERROR | INVALID_OUTPUT when success is false.
+  errorCode     String?
+  createdAt     DateTime   @default(now())
+
+  @@index([institutionId, createdAt])
+  @@index([kind, createdAt])
+  @@map("ai_call_logs")
+}
+
 model Subject {
   id            String    @id @default(uuid()) @db.Uuid
   institutionId String    @db.Uuid
@@ -141,11 +243,14 @@ model Course {
   updatedAt     DateTime  @updatedAt
   deletedAt     DateTime?
 
-  institution Institution  @relation(fields: [institutionId], references: [id])
-  subject     Subject      @relation(fields: [subjectId], references: [id])
-  teacher     User         @relation(fields: [teacherId], references: [id])
-  enrollments Enrollment[]
-  schedules   Schedule[]
+  institution        Institution         @relation(fields: [institutionId], references: [id])
+  subject            Subject             @relation(fields: [subjectId], references: [id])
+  teacher            User                @relation(fields: [teacherId], references: [id])
+  enrollments        Enrollment[]
+  schedules          Schedule[]
+  activities         Activity[]
+  attendanceSessions AttendanceSession[]
+  quizzes            Quiz[]
 
   @@index([institutionId, teacherId])
   @@index([subjectId])
@@ -162,8 +267,14 @@ model Student {
   updatedAt     DateTime  @updatedAt
   deletedAt     DateTime?
 
-  institution Institution  @relation(fields: [institutionId], references: [id])
-  enrollments Enrollment[]
+  institution       Institution        @relation(fields: [institutionId], references: [id])
+  enrollments       Enrollment[]
+  grades            Grade[]
+  attendanceRecords AttendanceRecord[]
+  submissions       Submission[]
+  guardians         StudentGuardian[]
+  consents          BiometricConsent[]
+  faceReference     FaceReference?
 
   @@unique([institutionId, code])
   @@map("students")
@@ -206,4 +317,286 @@ model Schedule {
   @@index([courseId, weekday])
   @@index([institutionId])
   @@map("schedules")
+}
+
+model Activity {
+  id            String    @id @default(uuid()) @db.Uuid
+  institutionId String    @db.Uuid
+  courseId      String    @db.Uuid
+  name          String
+  // Percentage of the period's final grade; the activities of a course+period sum to 100.
+  weightPct     Decimal   @db.Decimal(5, 2)
+  period        String
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  deletedAt     DateTime?
+
+  institution Institution  @relation(fields: [institutionId], references: [id])
+  course      Course       @relation(fields: [courseId], references: [id])
+  grades      Grade[]
+  rubric      Rubric?
+  submissions Submission[]
+
+  @@index([courseId, period])
+  @@index([institutionId])
+  @@map("activities")
+}
+
+model Grade {
+  id            String   @id @default(uuid()) @db.Uuid
+  institutionId String   @db.Uuid
+  activityId    String   @db.Uuid
+  studentId     String   @db.Uuid
+  // 0.00 – 5.00; null while the activity is still ungraded for the student.
+  value         Decimal? @db.Decimal(3, 2)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  institution Institution @relation(fields: [institutionId], references: [id])
+  activity    Activity    @relation(fields: [activityId], references: [id])
+  student     Student     @relation(fields: [studentId], references: [id])
+
+  @@unique([activityId, studentId])
+  @@index([studentId])
+  @@index([institutionId])
+  @@map("grades")
+}
+
+/// Links a GUARDIAN user to the students they may act for.
+model StudentGuardian {
+  id            String   @id @default(uuid()) @db.Uuid
+  institutionId String   @db.Uuid
+  studentId     String   @db.Uuid
+  guardianId    String   @db.Uuid
+  createdAt     DateTime @default(now())
+
+  institution Institution @relation(fields: [institutionId], references: [id])
+  student     Student     @relation(fields: [studentId], references: [id])
+  guardian    User        @relation(fields: [guardianId], references: [id])
+
+  @@unique([studentId, guardianId])
+  @@index([guardianId])
+  @@index([institutionId])
+  @@map("student_guardians")
+}
+
+/// Legal record of a biometric authorization. Revoking sets revokedAt; rows are kept.
+model BiometricConsent {
+  id            String         @id @default(uuid()) @db.Uuid
+  institutionId String         @db.Uuid
+  studentId     String         @db.Uuid
+  purpose       ConsentPurpose
+  grantedById   String         @db.Uuid
+  grantedByRole Role
+  grantedAt     DateTime       @default(now())
+  revokedAt     DateTime?
+  revokedById   String?        @db.Uuid
+
+  institution Institution @relation(fields: [institutionId], references: [id])
+  student     Student     @relation(fields: [studentId], references: [id])
+
+  @@index([studentId, purpose])
+  @@index([institutionId])
+  @@map("biometric_consents")
+}
+
+/// Encrypted facial representation (never the photo). Hard-deleted when consent is revoked.
+model FaceReference {
+  id            String   @id @default(uuid()) @db.Uuid
+  institutionId String   @db.Uuid
+  studentId     String   @unique @db.Uuid
+  consentId     String   @db.Uuid
+  // AES-256-GCM envelope produced by FieldCipher; the embedding is never stored in clear.
+  embeddingEnc  String   @db.Text
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  institution Institution @relation(fields: [institutionId], references: [id])
+  student     Student     @relation(fields: [studentId], references: [id])
+
+  @@index([institutionId])
+  @@map("face_references")
+}
+
+model Quiz {
+  id             String     @id @default(uuid()) @db.Uuid
+  institutionId  String     @db.Uuid
+  courseId       String     @db.Uuid
+  createdById    String     @db.Uuid
+  title          String
+  topic          String?
+  // Teacher-provided material the questions are generated from (kept to resume after a restart).
+  sourceText     String?    @db.Text
+  requestedCount Int        @default(5)
+  status         QuizStatus @default(GENERATING)
+  provider       String?
+  promptVersion  String?
+  publishedAt    DateTime?
+  createdAt      DateTime   @default(now())
+  updatedAt      DateTime   @updatedAt
+
+  institution Institution    @relation(fields: [institutionId], references: [id])
+  course      Course         @relation(fields: [courseId], references: [id])
+  questions   QuizQuestion[]
+
+  @@index([courseId])
+  @@index([institutionId])
+  @@index([status])
+  @@map("quizzes")
+}
+
+/// Questions born from the AI are PENDING_APPROVAL; only the teacher moves them forward.
+model QuizQuestion {
+  id           String           @id @default(uuid()) @db.Uuid
+  quizId       String           @db.Uuid
+  position     Int
+  type         QuestionType
+  prompt       String           @db.Text
+  // string[]; empty for OPEN questions.
+  options      Json
+  correctIndex Int?
+  explanation  String           @db.Text
+  // Who wrote it; metrics on AI quality only look at AI questions.
+  origin       QuestionOrigin   @default(AI)
+  status       SuggestionStatus @default(PENDING_APPROVAL)
+  decidedById  String?          @db.Uuid
+  decidedAt    DateTime?
+  createdAt    DateTime         @default(now())
+  updatedAt    DateTime         @updatedAt
+
+  quiz Quiz @relation(fields: [quizId], references: [id], onDelete: Cascade)
+
+  @@index([quizId])
+  @@map("quiz_questions")
+}
+
+model Rubric {
+  id            String   @id @default(uuid()) @db.Uuid
+  institutionId String   @db.Uuid
+  activityId    String   @unique @db.Uuid
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  institution Institution       @relation(fields: [institutionId], references: [id])
+  activity    Activity          @relation(fields: [activityId], references: [id])
+  criteria    RubricCriterion[]
+
+  @@index([institutionId])
+  @@map("rubrics")
+}
+
+model RubricCriterion {
+  id        String  @id @default(uuid()) @db.Uuid
+  rubricId  String  @db.Uuid
+  name      String
+  // Share of the final score; the criteria of a rubric sum to 100.
+  weightPct Decimal @db.Decimal(5, 2)
+  position  Int
+  // [{ "name": "Excelente", "score": "5.00" }, ...] — 0–5 scale.
+  levels    Json
+
+  rubric Rubric @relation(fields: [rubricId], references: [id], onDelete: Cascade)
+
+  @@index([rubricId])
+  @@map("rubric_criteria")
+}
+
+model Submission {
+  id            String           @id @default(uuid()) @db.Uuid
+  institutionId String           @db.Uuid
+  activityId    String           @db.Uuid
+  studentId     String           @db.Uuid
+  // Extracted text; the original file is not kept (D22/D24).
+  text          String           @db.Text
+  status        SubmissionStatus @default(PROCESSING)
+  createdAt     DateTime         @default(now())
+  updatedAt     DateTime         @updatedAt
+
+  institution Institution    @relation(fields: [institutionId], references: [id])
+  activity    Activity       @relation(fields: [activityId], references: [id])
+  student     Student        @relation(fields: [studentId], references: [id])
+  suggestions AiSuggestion[]
+
+  @@unique([activityId, studentId])
+  @@index([institutionId])
+  @@index([status])
+  @@map("submissions")
+}
+
+/// AI output. Never becomes a grade until the teacher approves or edits it.
+model AiSuggestion {
+  id             String           @id @default(uuid()) @db.Uuid
+  institutionId  String           @db.Uuid
+  submissionId   String           @db.Uuid
+  status         SuggestionStatus @default(PENDING_APPROVAL)
+  // Computed by domain/ from the criterion scores, not by the model.
+  suggestedScore Decimal?         @db.Decimal(3, 2)
+  finalScore     Decimal?         @db.Decimal(3, 2)
+  feedback       String           @db.Text
+  // Per criterion: id, name, weightPct, level, score, justification, evidenceQuote.
+  criteria       Json
+  provider       String
+  promptVersion  String
+  decidedById    String?          @db.Uuid
+  decidedAt      DateTime?
+  createdAt      DateTime         @default(now())
+
+  institution Institution @relation(fields: [institutionId], references: [id])
+  submission  Submission  @relation(fields: [submissionId], references: [id])
+
+  @@index([submissionId])
+  @@index([institutionId, status])
+  @@map("ai_suggestions")
+}
+
+model AttendanceSession {
+  id              String         @id @default(uuid()) @db.Uuid
+  institutionId   String         @db.Uuid
+  courseId        String         @db.Uuid
+  createdById     String         @db.Uuid
+  // Calendar day of the class (no time zone).
+  date            DateTime       @db.Date
+  status          SessionStatus  @default(READY)
+  mode            AttendanceMode @default(MANUAL)
+  // Faces the AI detected that matched no enrolled student (facial sessions only).
+  facesNotMatched Int?
+  // Snapshot of what the AI proposed, before any teacher correction (PHOTO sessions).
+  aiRecognized    Int?
+  aiUnrecognized  Int?
+  // Enrolled students nobody looked for (no consent or no facial reference).
+  notConsidered   Int?
+  confirmedAt     DateTime?
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+
+  institution Institution        @relation(fields: [institutionId], references: [id])
+  course      Course             @relation(fields: [courseId], references: [id])
+  createdBy   User               @relation(fields: [createdById], references: [id])
+  records     AttendanceRecord[]
+
+  @@index([courseId, date])
+  @@index([institutionId])
+  @@map("attendance_sessions")
+}
+
+model AttendanceRecord {
+  id            String           @id @default(uuid()) @db.Uuid
+  institutionId String           @db.Uuid
+  sessionId     String           @db.Uuid
+  studentId     String           @db.Uuid
+  status        AttendanceStatus
+  source        AttendanceSource @default(MANUAL)
+  // Match confidence 0.000–1.000 given by the AI; kept after a manual correction.
+  confidence    Decimal?         @db.Decimal(4, 3)
+  createdAt     DateTime         @default(now())
+  updatedAt     DateTime         @updatedAt
+
+  institution Institution       @relation(fields: [institutionId], references: [id])
+  session     AttendanceSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  student     Student           @relation(fields: [studentId], references: [id])
+
+  @@unique([sessionId, studentId])
+  @@index([studentId])
+  @@index([institutionId])
+  @@map("attendance_records")
 }
